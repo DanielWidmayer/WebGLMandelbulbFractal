@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Mandelbulb</title>
+        <author>Jens Bühler, Daniel Widmayer, Nils Löwen, Mario Goller</author>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+            body {
+                background: #000;
+                overflow: hidden;
+                margin: 0;
+                padding: 0;
+            }
+            #glcanvas {
+                width: 100vw;
+                position: absolute;
+                top: 0px;
+                left: 0px;
+            }
+            @media only screen and (max-width: 530px) {
+                #glcanvas {
+                    top: 350px;
+                }
+            }
+            #c_fps {
+                font-size: 2vh;
+                background: rgba(255, 255, 255, 0.1);
+                color: white;
+                padding: 0.5em;
+                font-family: monospace;
+                border-radius: 0.5em;
+                margin-bottom: 0.5em;
+            }
+            .sidebar {
+                position: absolute;
+                left: 5px;
+                top: 5px;
+            }
+            .user_inputs {
+                background: rgba(255, 255, 255, 0.1);
+                color: white;
+                padding: 0.5em;
+                font-family: monospace;
+                border-radius: 0.5em;
+            }
+            button {
+                background-color: rgba(255, 255, 255, 0.3);
+                border: none;
+                color: white;
+                padding: 0.5em;
+                text-align: center;
+                text-decoration: none;
+                cursor: pointer;
+                margin-bottom: 0.5em;
+            }
+        </style>
+    </head>
+
+    <body onload="start();">
+        <canvas id="glcanvas">Please make sure that your browser supports HTML5</canvas>
+        <div class="sidebar">
+            <div id="c_fps">fps: <span id="fps"></span><br /></div>
+            <div class="user_inputs">
+                <button onclick="loadPreset(0.00001, 1000, 2.0, 50.0, false, true, true)">HQ Preset</button>
+                <button onclick="loadPreset(0.0001, 500, 2.0, 50.0, false, true, true)" active>Default Preset</button><br />
+                <button onclick="loadPreset(0.001, 777, 25.0, 50.0, true, false, true)">Light Preset</button>
+                <button onclick="loadPreset(0.00001, 1000, 25.0, 1.0, true, false, false)">Zoomed Preset</button><br />
+                <input type="checkbox" id="u_lightsEnabled" name="Lights" onclick="changeSetting('u_lightsEnabled')" />
+                <label for="Lights"> Lights</label><br />
+                <input type="checkbox" id="animationEnabled" name="Animation" onclick="playAnimation = !playAnimation;" checked />
+                <label for="Animation"> Animation</label><br />
+                <input type="checkbox" id="rotationEnabled" name="Rotation" onclick="rotate = !rotate;" checked />
+                <label for="Rotation"> Rotation</label><br />
+                <label for="Epsilon">Detail: <label id="epsilon_value"></label></label><br />
+                <input type="range" min="0.00001" max="0.001" value="0.0001" step="0.00001" name="Epsilon" id="u_epsilon" oninput="showVal('u_epsilon', 'epsilon_value')" /><br />
+                <label for="RaymarchingSteps"> Depth: <label id="steps_value"></label></label><br />
+                <input type="range" min="100" max="1000" value="500" name="RaymarchingSteps" id="u_maxSteps" oninput="showIntVal('u_maxSteps', 'steps_value')" /><br />
+                <label for="Power"> Power: <label id="power_value"></label></label><br />
+                <input type="range" min="-1" max="30" value="2.0" step="0.02" name="Power" id="u_power" oninput="showVal('u_power', 'power_value')" /><br />
+                <label for="FOV"> Field of View: <label id="fov_value"></label></label><br />
+                <input type="range" min="1.0" max="100.0" value="50.0" step="0.5" name="FOV" id="u_fov" oninput="showVal('u_fov', 'fov_value')" /><br />
+            </div>
+        </div>
+        <script id="2d-vertex-shader" type="x-shader/x-vertex">
+            // set medium precision for the vertex shader GPU float calculations
+            precision mediump float;
+
+            // position attribute
+            attribute vec2 a_position;
+
+            void main()
+            {
+                gl_Position = vec4(a_position, 0.0, 1.0);
+            }
+        </script>
+        <script id="3d-fragment-shader" type="x-shader/x-fragment">
+            // set medium precision for the fragment shader GPU float calculations
+            precision mediump float;
+
+            // uniforms
+            // for each axis we use a float containing the radian rotation
+            uniform float time_rotation_x;
+            uniform float time_rotation_y;
+            uniform float time_rotation_z;
+            // u_resolution is the resolution of the viewport
+            uniform vec2 u_resolution;
+            // for the animation we increase the fractal power and pass that value with u_fractalIncrements
+            uniform float u_fractalIncrements;
+
+            // distance delta for object hit, used to vary details
+            uniform float u_epsilon;
+            // power for mandelbulb calculation
+            uniform float u_power;
+            // field of view used to zoom in/out
+            uniform float u_fov;
+            // amount of raymarch steps, the higher, the less artifacts, used for depth aswell
+            uniform int u_maxSteps;
+            // user input, en-/disables light
+            uniform bool u_lightsEnabled;
+
+            // minimal distance in order that the pixel is rendered
+            const float MIN_DIST = 0.0;
+            // furthest distance in order that the pixel will be rendered
+            const float MAX_DIST = 50.0;
+            // max steps per iteration, needed because for loops need const values as comparators
+            const int MAX_STEPS = 1000;
+
+            // elemental rotations
+            // the following three methods use rotation matrices to rotate vectors by the angle theta about the x-, y-, or z-axis
+            // Source: https://en.wikipedia.org/wiki/Rotation_matrix
+            mat3 xRotation(float theta) {
+                float cosTheta = cos(theta);
+                float sinTheta = sin(theta);
+                return mat3(
+                    vec3(1, 0, 0),
+                    vec3(0, cosTheta, -sinTheta),
+                    vec3(0, sinTheta, cosTheta)
+                );
+            }
+
+            mat3 yRotation(float theta) {
+                float cosTheta = cos(theta);
+                float sinTheta = sin(theta);
+                return mat3(
+                    vec3(cosTheta, 0, sinTheta),
+                    vec3(0, 1, 0),
+                    vec3(-sinTheta, 0, cosTheta)
+                );
+            }
+
+            mat3 zRotation(float theta) {
+                float cosTheta = cos(theta);
+                float sinTheta = sin(theta);
+                return mat3(
+                    vec3(cosTheta, -sinTheta, 0),
+                    vec3(sinTheta, cosTheta, 0),
+                    vec3(0, 0, 1)
+                );
+            }
+
+            // v = {x,y,z}
+            // White and Nylander's formula: {x,y,z}^n = r^n{sin(θ)cos(φ),sin(θ)sin(φ),cos(φ)}
+            // r=sqrt(x^2+y^2+z^2)
+            // θ=n*arccos(z/r)
+            // φ=n*arctan(y/x)
+            // Source: https://en.wikipedia.org/wiki/Mandelbulb
+            float MandelbulbDistance(vec3 point)
+            {
+                vec3 z = point; // z is the copy of the given point for faster calculation
+                float dr = 3.0; // dr is approximated as length of the running (complex) derivative
+                float r; // r is the given vectors length
+
+                // after iteration 20 the structure doesn't change much (source: https://www.skytopia.com/project/fractal/2mandelbulb.html#iter)
+                for(int i = 0; i < 20; i++)
+                {
+                    r = length(z);
+                    if(r > 3.0)
+                    {
+                        break;
+                    }
+
+                    // calculate the power, scale it and set the animation speed
+                    float power = u_power + 5.0 *(1.0 + sin(0.5 * u_fractalIncrements));
+
+                    // conversion to polar coordinates + scale and rotate the point
+                    float theta = acos(z.z / r) * power;
+                    float phi = atan(z.y, z.x) * power;
+                    dr = pow(r, power - 1.0) * power * dr + 1.0;
+                    float zr = pow(r, power);
+
+                    // convert back to cartesian coordinates
+                    z = zr * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta));
+                    z += point;
+                }
+                // calculate and return the distance estimator
+                return (0.5 * log(r) * r) / dr;
+            }
+
+            // determines the distance of a given point x from the boundary, the sign determines whether the point is in the set
+            // therefore the points vector is rotated by the rotation matrices and then the Mandelbulb distance is returned
+            float sceneSignedDistanceFunction(vec3 point)
+            {
+                point = point * xRotation(time_rotation_x) * yRotation(time_rotation_y) * zRotation(time_rotation_z);
+                return MandelbulbDistance(point);
+            }
+
+            // raymarch rendering is run on every pixel
+            // it is used to find an intersection with the object
+            // based on the amount of iterations we can then return a gradient
+            float rayMarch(vec3 rayOrigin, vec3 rayDirection)
+            {
+                float totalDistance = 0.0; // stores distance along ray
+                int steps; // copy of iterator for calculations
+
+                for(int i = 0; i < MAX_STEPS; i++)
+                {
+                    steps = i;
+                    // move along from ray origin in the ray direction by circle radius
+                    vec3 point = rayOrigin + totalDistance * rayDirection;
+                    float dist = sceneSignedDistanceFunction(point);
+                    totalDistance += dist;
+
+                    // if the distance is smaller than our epsilon we've hit something
+                    if(dist < u_epsilon)
+                    {
+                        if(u_lightsEnabled) return (float(steps) / float(u_maxSteps)); // return gray scale value
+                        else return 1.0 - 2.0 * (float(steps) / float(u_maxSteps)); // return inverted gray scale => glow effect
+                    }
+
+                    // if the distance is further than the object we hit nothing => background
+                    if(dist > MAX_DIST)
+                    {
+                        return 0.0;
+                    }
+
+                    // since we can't compare non-constant expressions in the for loops,
+                    // return if the user given max steps are reached
+                    if(steps >= u_maxSteps){
+                        return 0.0;
+                    }
+
+                }
+                return 0.0;
+            }
+
+            // transforming world-space points into camera-space
+            // eyePos is the viewer, targetPoint is where we want to look at, upDirection is a global up vector
+            mat3 lookAtViewMatrix(vec3 eyePos, vec3 targetPoint, vec3 upDirection) {
+                vec3 forward = normalize(targetPoint - eyePos);
+                vec3 left = normalize(cross(forward, upDirection));
+                vec3 up = cross(left, forward);
+                return mat3(left, up, -forward);
+            }
+
+            // estimate direction of ray
+            vec3 rayDirection(float fieldOfView, vec2 resolution, vec2 fragmentCoordinates) {
+                vec2 xy_coordinates = fragmentCoordinates - (resolution / 2.0);
+                float z_coordinate = -1.0 * (resolution.y / tan(radians(fieldOfView) / 2.0));
+                return normalize(vec3(xy_coordinates, z_coordinate));
+            }
+
+            // mathematical mapping
+            float map(float value, float minNewRange, float maxNewRange)
+            {
+                return (value * (maxNewRange - minNewRange)) + minNewRange;
+            }
+
+            // return shortest distance to the scene surface in marching direction
+            // if we don't hit anything between start and end, return end
+            float shortestDistanceToSurface(vec3 eyePos, vec3 marchingDirection, float start, float end) {
+                float depth = start;
+                for (int i = 0; i < MAX_STEPS; i++) {
+                    float dist = sceneSignedDistanceFunction(eyePos + depth * marchingDirection);
+                    if (dist < u_epsilon) {
+                        return depth;
+                    }
+                    depth += dist;
+                    if (depth >= end) {
+                        return end;
+                    }
+
+                }
+                return end;
+            }
+
+
+            //calculate the gradient of the SignedDistanceFunction and with that estimate the normal on the surface at the given point p
+            vec3 estimateNormal(vec3 p) {
+                return normalize(vec3(
+                    sceneSignedDistanceFunction(vec3(p.x + u_epsilon, p.y, p.z)) - sceneSignedDistanceFunction(vec3(p.x - u_epsilon, p.y, p.z)),
+                    sceneSignedDistanceFunction(vec3(p.x, p.y + u_epsilon, p.z)) - sceneSignedDistanceFunction(vec3(p.x, p.y - u_epsilon, p.z)),
+                    sceneSignedDistanceFunction(vec3(p.x, p.y, p.z  + u_epsilon)) - sceneSignedDistanceFunction(vec3(p.x, p.y, p.z - u_epsilon))
+                ));
+            }
+
+            // compute lighting of a single point light source with Phong illumination
+            // k_specular: specular reflection constant/color, the ratio of reflection of the specular term of incoming light
+            // k_diffuse: diffuse reflection constant/color, the ratio of reflection of the diffuse term of incoming light
+            // alpha: Shininess coefficient for the material
+            // surfacePoint: position of surface point where the light is applied
+            // eyePos: the position of the camera/viewer
+            // lightPos: the position of the light source
+            // lightIntensity: color/intensity of the light
+            // Source https://en.wikipedia.org/wiki/Phong_reflection_model
+            vec3 computePhongIllumination(vec3 k_diffuse, vec3 k_specular, float alpha, vec3 surfacePoint, vec3 eyePos, vec3 lightPos, vec3 lightIntensity) {
+                // calculate normal on this point on the surface
+                vec3 normal = estimateNormal(surfacePoint);
+                // calculate light direction vector from the point on the surface toward the light source
+                vec3 light = normalize(lightPos - surfacePoint);
+                // calculate viewer direction (virtual camera) pointing towards the viewer
+                vec3 viewer = normalize(eyePos - surfacePoint);
+                // calculate reflection direction that a perfectly reflected ray of light would point to after being reflected
+                vec3 reflection = normalize(reflect(-light, normal));
+
+                // calculate the dot products
+                float dotLightNormal = dot(light, normal);
+                float dotReflectionViewer = dot(reflection, viewer);
+
+                if (dotLightNormal < 0.0) {
+                    // Light isn't visible from this point on the surface
+                    return vec3(0.0, 0.0, 0.0);
+                }
+
+                if (dotReflectionViewer < 0.0) {
+                    // Light reflection in opposite direction as viewer, apply diffuse only
+                    return lightIntensity * (k_diffuse * dotLightNormal);
+                }
+                // return equation for computing the illumination of the individual surface point
+                return lightIntensity * (k_diffuse * dotLightNormal + k_specular * pow(dotReflectionViewer, alpha));
+            }
+
+            // apply phong illumination with different light sources
+            // k_ambient: ambient reflection constant/color, the ratio of reflection of the ambient term present in all points in the scene rendered
+            vec3 phongIllumination(vec3 k_ambient, vec3 k_diffuse, vec3 k_specular, float alpha, vec3 surfacePoint, vec3 eyePos) {
+                // set and apply ambient light
+                const vec3 ambientLight = vec3(0.5, 0.5, 0.5);
+                vec3 color = ambientLight * k_ambient;
+
+                // set light source and intensity and calculate phong illumination
+                vec3 lightSource = vec3(2.0 , 3.0, 0.0);
+                vec3 lightIntensity = 0.7 * vec3(1.0, 1.0, 1.0);
+                color += computePhongIllumination(k_diffuse, k_specular, alpha, surfacePoint, eyePos, lightSource, lightIntensity);
+
+                // set light source and intensity and calculate phong illumination for a second light source
+                lightSource = vec3(2.0, 0.0, 3.0);
+                lightIntensity = 0.8 * vec3(1.0, 1.0, 1.0);
+                color += computePhongIllumination(k_diffuse, k_specular, alpha, surfacePoint, eyePos, lightSource, lightIntensity);
+                return color;
+            }
+
+            void main()
+            {
+                // move viewers position to have an oblique view
+                vec3 eyePosition = vec3(5.0, 0.0, 0.0);
+                // get raymarch direction
+                vec3 directionOfRay = rayDirection(u_fov, u_resolution.xy, gl_FragCoord.xy);
+                // get raymarch transformation matrix
+                mat3 rayTransform = lookAtViewMatrix(eyePosition, vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0));
+
+                // calculate world direction by multiplying the transform matrix with the direction Vector
+                vec3 worldDirection = rayTransform * directionOfRay;
+
+                // get the gray scale with the ray march algorithm
+                float grayScale = rayMarch(eyePosition, worldDirection);
+
+                // check if value is black
+                if(grayScale != 0.0)
+                {
+                    // define color
+                    float r = map(grayScale, 0.0, 0.0);
+                    float g = map(grayScale, 0.0, 0.0);
+                    float b = map(grayScale, 1.0, 0.0);
+
+                    vec3 color = vec3(r, g , b);
+
+                    // if the lights are enabled calculate the closes point and then apply the Phong Illumination
+                    if(u_lightsEnabled){
+                        float dist = shortestDistanceToSurface(eyePosition, worldDirection, MIN_DIST, MAX_DIST);
+
+                        // The closest point on the surface to the eyepoint along the view ray
+                        vec3 p = eyePosition + dist * worldDirection;
+
+                        // define ambient color
+                        float b_a = map(grayScale, 0.2, 0.0);
+                        vec3 ambient_color = vec3(r, g , b_a);
+
+                        // set light color and alpha/shininess value
+                        vec3 light_color = vec3(1.0, 1.0, 1.0);
+                        float shininess = 100.0;
+
+                        // apply lights
+                        color = phongIllumination(ambient_color, color, light_color, shininess, p, eyePosition);
+                    }
+
+                    // finally set the calculated color
+                    gl_FragColor = vec4(color, 1.0);
+                }
+                else
+                {
+                    // background color
+                    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                }
+            }
+        </script>
+        <script type="text/javascript">
+            /************** SECTION: Mesh **************
+             * Define the Mesh Class and all needed methods
+             */
+            class Mesh {
+                constructor(verticesArray, shader) {
+                    this.length = verticesArray.length / 2;
+                    // get the position attribute to bind the vertices to
+                    const positionAttribute = gl.getAttribLocation(shader.GetProgram(), 'a_position');
+
+                    // create a WebGLBuffer to store vertices
+                    this.buffer = gl.createBuffer();
+
+                    // bind vertex attributes to buffer
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verticesArray), gl.STATIC_DRAW);
+
+                    gl.enableVertexAttribArray(positionAttribute);
+                    // bind the buffer currently bound to gl.ARRAY_BUFFER to the position attribute of the current vertex buffer object and specify its layout
+                    gl.vertexAttribPointer(positionAttribute, 2, gl.FLOAT, false, 0, 0);
+                }
+
+                // render the meshs geometry
+                Render() {
+                    gl.drawArrays(gl.TRIANGLES, 0, this.length);
+                }
+            }
+
+            /************** SECTION: Shader **************
+             * Define the shader Class and all needed methods
+             */
+            class Shader {
+                // creates a shader program, gets and attaches the vertex and fragment shader to it
+                constructor(vertShaderId, fragShaderId) {
+                    this.shaderProgram = gl.createProgram();
+
+                    var vertexShader = this.getShader(gl, vertShaderId);
+                    var fragmentShader = this.getShader(gl, fragShaderId);
+
+                    gl.attachShader(this.shaderProgram, vertexShader);
+                    gl.attachShader(this.shaderProgram, fragmentShader);
+                    gl.linkProgram(this.shaderProgram);
+
+                    if (!gl.getProgramParameter(this.shaderProgram, gl.LINK_STATUS)) {
+                        alert("Couldn't initialize shaders.");
+                    }
+                }
+
+                // read the shader file compile it and create a WebGL shader
+                getShader(gl, id) {
+                    var shaderScript = document.getElementById(id);
+                    if (!shaderScript) {
+                        return null;
+                    }
+
+                    var shaderSource = shaderScript.text;
+
+                    var shader;
+                    if (shaderScript.type == 'x-shader/x-fragment') {
+                        shader = gl.createShader(gl.FRAGMENT_SHADER);
+                    } else if (shaderScript.type == 'x-shader/x-vertex') {
+                        shader = gl.createShader(gl.VERTEX_SHADER);
+                    } else {
+                        return null;
+                    }
+
+                    gl.shaderSource(shader, shaderSource);
+                    gl.compileShader(shader);
+
+                    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                        // log shader errors
+                        console.error(gl.getShaderInfoLog(shader));
+                        return null;
+                    }
+
+                    return shader;
+                }
+
+                // returns the WebGL shader program
+                GetProgram() {
+                    return this.shaderProgram;
+                }
+
+                // use the WebGL shader program as the active renderer
+                UseProgram() {
+                    gl.useProgram(this.shaderProgram);
+                }
+
+                // set a vec2 float uniform in the shader
+                SetUniformVec2(uniformName, vector) {
+                    gl.uniform2fv(gl.getUniformLocation(this.shaderProgram, uniformName), vector);
+                }
+
+                // set a float uniform in the shader
+                SetUniformFloat(uniformName, value) {
+                    gl.uniform1f(gl.getUniformLocation(this.shaderProgram, uniformName), value);
+                }
+
+                // set an int uniform in the shader
+                SetUniformInt(uniformName, value) {
+                    gl.uniform1i(gl.getUniformLocation(this.shaderProgram, uniformName), value);
+                }
+            }
+
+            /************** SECTION: Timer **************
+             * The timer defines the animation speed, framerate and rotation speed
+             */
+
+            // define framerate 1s/60fps = 16.7ms
+            const MILLISECONDS_PER_FRAME = 16.7;
+            // define z-rotation speed by amount of ticks (~8.35s)
+            const ROTATION_TICKS = 1000;
+            // define animation speed by defining the increment of the fractal
+            const FRACTAL_INCREMENT = 0.02;
+
+            class Timer {
+                constructor() {
+                    this.startingTime = new Date();
+                    this.elapsedTicks = 0;
+                    this.elapsedTime = 0;
+                    this.fractalIncrementer = 0.0;
+                }
+
+                // measure elapsed time since last measure
+                GetTime() {
+                    var endingTime = new Date();
+                    var elapsedTime = endingTime - this.startingTime;
+                    this.startingTime = endingTime;
+
+                    return elapsedTime;
+                }
+
+                // update time, fractal, rotation and ticks
+                Update() {
+                    this.elapsedTime += this.GetTime();
+
+                    if (this.elapsedTime > MILLISECONDS_PER_FRAME) {
+                        if (playAnimation) {
+                            this.fractalIncrementer += FRACTAL_INCREMENT;
+                        }
+                        if (rotate) {
+                            this.elapsedTicks++;
+                        }
+                        if (this.elapsedTicks == ROTATION_TICKS) {
+                            this.elapsedTicks = 0;
+                        }
+                        this.elapsedTime = 0;
+                    }
+                }
+
+                // return value between 0 and 2 pi based on the elapsed ticks
+                GetTicksInRadians() {
+                    return ((this.elapsedTicks - ROTATION_TICKS) / ROTATION_TICKS) * (2 * Math.PI);
+                }
+
+                // return float value that increases the power for the 3D fractal fragment shader
+                GetFractalIncrement() {
+                    return this.fractalIncrementer;
+                }
+            }
+
+            /************** SECTION: Canvas **************
+             * Start, Initialize, Resize and Render anything necessary for and in the canvas
+             */
+            var mesh, timer, shaderProgram;
+
+            // start() is the main function that gets called onload
+            var start = function () {
+                // initialize the WebGL 2.0 canvas
+                initCanvas();
+
+                // create timer that will be used for fragment shader
+                timer = new Timer();
+
+                // read, compile, and create a shader program
+                shaderProgram = new Shader('2d-vertex-shader', '3d-fragment-shader');
+                // activate the shader program
+                shaderProgram.UseProgram();
+
+                // initialize all values in the sidebar
+                initSidebar();
+
+                // Set vertices of the mesh
+                var vertices = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0];
+
+                // Create a mesh based upon the defined vertices and indices
+                mesh = new Mesh(vertices, shaderProgram);
+
+                // Render the scene
+                window.requestAnimationFrame(drawScene);
+            };
+
+            // starts the canvas and gl
+            var initCanvas = function () {
+                canvas = document.getElementById('glcanvas');
+                gl = canvas.getContext('webgl2'); // use WebGL2 context
+
+                gl.enable(gl.DEPTH_TEST);
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            };
+
+            // initializes sidebar values in UI and the shader
+            var initSidebar = function () {
+                showVal('u_epsilon', 'epsilon_value');
+                showIntVal('u_maxSteps', 'steps_value');
+                showVal('u_power', 'power_value');
+                showVal('u_fov', 'fov_value');
+                changeSetting('u_lightsEnabled');
+            };
+
+            // rotation variables that store the latest rotation, for fluent and continous user dragging
+            // needed if the rotation is enabled to continue rotating from position changed by the user drag
+            var xrot = 0,
+                yrot = 0,
+                zrot = 0;
+
+            // global bools for animation and rotation
+            var playAnimation = true;
+            var rotate = true;
+
+            // vars for fps measureing at sidebar
+            const maxFrames = 60;
+            const frameTimeArray = [];
+            const fpsDisplay = document.querySelector('#fps');
+            let last_measure = 0,
+                frameIndex = 0,
+                frames_ctr = 0,
+                totalFPS = 0,
+                update_fps = 0;
+
+            // function draws the scene and shows the fps
+            // it updates the timer, passes the uniforms and renders the Mesh
+            var drawScene = function (now) {
+                now *= 0.001; // convert time from ms to seconds
+                const deltaTime = now - last_measure; // compute time since last frame
+                last_measure = now; // remember the time for the next frame
+                const fps = 1 / deltaTime; // compute frames per second
+                // add the current fps and remove the oldest fps to the array
+                totalFPS = totalFPS + fps - (frameTimeArray[frameIndex] || 0);
+                // record the newest fps
+                frameTimeArray[frameIndex++] = fps;
+                // needed for the first n frames before maxFrames are reached
+                frames_ctr = Math.max(frames_ctr, frameIndex);
+                // wrap the index
+                frameIndex %= maxFrames;
+                // calculate average fps over the stored frames
+                const averageFPS = totalFPS / frames_ctr;
+                update_fps += deltaTime;
+                // update fps display each 0.1s
+                if (update_fps > 0.1) {
+                    fpsDisplay.textContent = averageFPS.toFixed(1);
+                    update_fps = 0;
+                }
+
+                normalSceneFrame = window.requestAnimationFrame(drawScene);
+
+                // Adjust scene for any canvas resizing
+                resize(gl.canvas);
+                // Update the viewport to the current canvas size
+                gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+                // Set background color to sky blue, used for debug purposes
+                gl.clearColor(0.53, 0.81, 0.92, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                // Update the timer
+                timer.Update();
+
+                // Set uniform values of the fragment shader
+                // Set the Mandelbulb by the resolution
+                shaderProgram.SetUniformVec2('u_resolution', [gl.canvas.width, gl.canvas.height]);
+                // if user doesn't drag rotate, else set mouse dragged rotation
+                if (!userDrags) {
+                    // Set the x-rotation with the timer and previous rotation
+                    shaderProgram.SetUniformFloat('time_rotation_x', xrot + timer.GetTicksInRadians());
+                    // Set the y-rotation with the timer and previous rotation
+                    shaderProgram.SetUniformFloat('time_rotation_y', yrot + timer.GetTicksInRadians());
+                    // Set the z-rotation with the timer and previous rotation
+                    shaderProgram.SetUniformFloat('time_rotation_z', zrot + timer.GetTicksInRadians() * 2);
+                } else {
+                    // Set the z-rotation with the mouse dragged rotation
+                    shaderProgram.SetUniformFloat('time_rotation_z', zrot);
+                    // Set the y-rotation with the mouse dragged rotation
+                    shaderProgram.SetUniformFloat('time_rotation_y', yrot);
+                }
+
+                // Set the animation by the fractal increment steps
+                if (playAnimation) {
+                    shaderProgram.SetUniformFloat('u_fractalIncrements', timer.GetFractalIncrement());
+                }
+                // render the scene
+                mesh.Render();
+            };
+
+            // resizes canvas to fit browser window
+            var resize = function (canvas) {
+                // Lookup the size the browser is displaying the canvas.
+                var displayWidth = canvas.clientWidth;
+                var displayHeight = canvas.clientHeight;
+
+                // Check if the canvas is not the same size.
+                if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+                    // Make the canvas the same size
+                    canvas.width = displayWidth;
+                    canvas.height = displayHeight;
+                    aspectRatio = displayWidth / displayHeight;
+                }
+            };
+
+            /************** SECTION: Dragability **************
+             * Make the object moveable by the user, by dragging
+             */
+            var userDrags = false; //
+            var last_z, last_y; // store last value, used to calculate the delta
+            var canvas = document.getElementById('glcanvas');
+
+            // When mouse is pressed down the rotation is being saved and the dragging is captured
+            var mouseDown = function (e) {
+                userDrags = true;
+                let currentRotation = timer.GetTicksInRadians();
+                (xrot += currentRotation), ((yrot += currentRotation), (zrot += currentRotation * 2));
+                (last_z = e.pageX), (last_y = e.pageY);
+                e.preventDefault(); // prevent opening a link
+                return false;
+            };
+
+            // When the mouse is relieved and was dragged before the dragging is set false
+            // and the timer is resetted to continue the rotation from the new rotation
+            var mouseUp = function (e) {
+                if (userDrags == true) {
+                    userDrags = false;
+                    timer.elapsedTicks = 0;
+                }
+            };
+
+            // When the Mouse is moved and dragged the user can rotate manually
+            // Therefore the delta of the last page X and Y values is calculated to rotate the Z and Y value
+            var mouseMove = function (e) {
+                if (!userDrags) return false;
+                let new_z = ((last_z - e.pageX) * 2 * Math.PI) / canvas.width,
+                    new_y = ((last_y - e.pageY) * 2 * Math.PI) / canvas.height;
+                (zrot += new_z), (yrot += new_y);
+                (last_z = e.pageX), (last_y = e.pageY);
+                e.preventDefault(); // prevent opening a link
+            };
+
+            // listen for mouse Events and bind them to above defined functions
+            canvas.addEventListener('mousedown', mouseDown, false);
+            canvas.addEventListener('mouseup', mouseUp, false);
+            canvas.addEventListener('mouseout', mouseUp, false);
+            canvas.addEventListener('mousemove', mouseMove, false);
+
+            // shows val_el_id float Value at print_el_id sidebar range picker and passes it to the shader
+            var showVal = function (val_el_id, print_el_id) {
+                let newVal = document.getElementById(val_el_id).value;
+                document.getElementById(print_el_id).innerHTML = newVal;
+                shaderProgram.SetUniformFloat(val_el_id, newVal);
+            };
+
+            // shows val_el_id Integer Value at print_el_id sidebar range picker and passes it to the shader
+            var showIntVal = function (val_el_id, print_el_id) {
+                let newVal = document.getElementById(val_el_id).value;
+                document.getElementById(print_el_id).innerHTML = newVal;
+                shaderProgram.SetUniformInt(val_el_id, newVal);
+            };
+
+            // changes the Checkbox Settings
+            var changeSetting = function (el_id) {
+                let newVal = document.getElementById(el_id).checked ? true : false;
+                shaderProgram.SetUniformFloat(el_id, newVal);
+            };
+
+            // loads a preset of given values
+            var loadPreset = function (detailValue, depthValue, powerValue, fovValue, lightsEnabled, animationEnabled, rotationEnabled) {
+                document.getElementById('u_epsilon').value = detailValue;
+                document.getElementById('u_maxSteps').value = depthValue;
+                document.getElementById('u_power').value = powerValue;
+                document.getElementById('u_fov').value = fovValue;
+                showVal('u_epsilon', 'epsilon_value');
+                showIntVal('u_maxSteps', 'steps_value');
+                showVal('u_power', 'power_value');
+                showVal('u_fov', 'fov_value');
+                let state_lightsEnabled = document.getElementById('u_lightsEnabled').checked ? true : false;
+                if (state_lightsEnabled != lightsEnabled) {
+                    document.getElementById('u_lightsEnabled').click();
+                }
+                if (playAnimation != animationEnabled) {
+                    document.getElementById('animationEnabled').click();
+                }
+                if (rotate != rotationEnabled) {
+                    document.getElementById('rotationEnabled').click();
+                }
+            };
+        </script>
+    </body>
+</html>

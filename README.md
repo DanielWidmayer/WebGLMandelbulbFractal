@@ -4,3 +4,5 @@ DHBW Stuttgart WebGL Project that displays a 3D Mandelbub Fractal without the us
 Demo: https://danielwidmayer.github.io/WebGLMandelbulbFractal/Mandelbulb.html
 
 Video: https://youtu.be/-fKTkcGysxY
+
+Preview: ![Mandelbulb](https://i.imgur.com/95ZZYEK.png)

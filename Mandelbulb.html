@@ -297,7 +297,7 @@
             // compute lighting of a single point light source with Phong illumination
             // k_specular: specular reflection constant/color, the ratio of reflection of the specular term of incoming light
             // k_diffuse: diffuse reflection constant/color, the ratio of reflection of the diffuse term of incoming light
-            // alpha: Shininess coefficient for the material
+            // alpha: shininess material coefficient
             // surfacePoint: position of surface point where the light is applied
             // eyePos: the position of the camera/viewer
             // lightPos: the position of the light source
@@ -387,7 +387,8 @@
 
                         // set light color and alpha/shininess value
                         vec3 light_color = vec3(1.0, 1.0, 1.0);
-                        float shininess = 100.0;
+                        // shininess is lower at more detailed objects
+                        float shininess = 20.0 + 100000.0 * u_epsilon;
 
                         // apply lights
                         color = phongIllumination(ambient_color, color, light_color, shininess, p, eyePosition);

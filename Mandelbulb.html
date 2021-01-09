@@ -160,22 +160,25 @@
                 );
             }
 
-            // v = {x,y,z}
-            // White and Nylander's formula: {x,y,z}^n = r^n{sin(θ)cos(φ),sin(θ)sin(φ),cos(φ)}
-            // r=sqrt(x^2+y^2+z^2)
-            // θ=n*arccos(z/r)
-            // φ=n*arctan(y/x)
+            // Vector: v = {x,y,z}
+            // White and Nylander's formula: {x,y,z}^p = r^p{sin(θ)cos(φ),sin(θ)sin(φ),cos(φ)}
+            // Radius: r=sqrt(x^2+y^2+z^2)
+            // Theta: θ=p*arccos(z/r)
+            // Phi: φ=p*arctan(y/x)
             // Source: https://en.wikipedia.org/wiki/Mandelbulb
             float MandelbulbDistanceEstimation(vec3 point)
             {
-                vec3 z = point; // z is the copy of the given point for faster calculation
-                float dr = 5.0; // dr is approximated as length of the running (complex) derivative, default value changes glow effect
+                vec3 v = point; // v is the copy of the given vector/point for faster calculation
+                // dr is approximated as length of the running (complex) derivative
+                // the default value defines the step value for the raymarching, its only used if the vector r is longer than 3.0
+                float dr = 2.5;
                 float r; // r is the given vectors length
 
                 // after iteration 20 the structure doesn't change much (source: https://www.skytopia.com/project/fractal/2mandelbulb.html#iter)
                 for(int i = 0; i < 20; i++)
                 {
-                    r = length(z);
+                    r = length(v); // get the vectors lenght r=sqrt(x^2+y^2+z^2)
+                    // check if vector is longer than 3, if yes return immediatedly (used for raymarching)
                     if(r > 3.0)
                     {
                         break;
@@ -185,16 +188,16 @@
                     float power = u_power + 4.0 *(1.0 + sin(0.5 * u_fractalIncrements));
 
                     // conversion to polar coordinates + scale and rotate the point
-                    float theta = acos(z.z / r) * power;
-                    float phi = atan(z.y, z.x) * power;
-                    float zr = pow(r, power);
+                    float theta = acos(v.z / r) * power;
+                    float phi = atan(v.y, v.x) * power;
+                    float rp = pow(r, power);
 
                     // convert back to cartesian coordinates
-                    z = zr * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta));
-                    z += point;
+                    v = rp * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta));
+                    v += point;
 
                     // calculate dr for the distance estimation
-                    dr = pow(r, power - 1.0) * power * dr + 1.0;
+                    dr = abs(pow(r, power - 1.0) * power * dr + 1.0);
 
                 }
                 // calculate and return the distance estimator

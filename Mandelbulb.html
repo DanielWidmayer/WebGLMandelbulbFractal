@@ -4,6 +4,7 @@
         <title>Mandelbulb</title>
         <author>Jens Bühler, Daniel Widmayer, Nils Löwen, Mario Goller</author>
         <meta charset="UTF-8" />
+        <link rel="shortcut icon" type="image/jpg" href="favicon.ico" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <style>
             body {
@@ -165,10 +166,10 @@
             // θ=n*arccos(z/r)
             // φ=n*arctan(y/x)
             // Source: https://en.wikipedia.org/wiki/Mandelbulb
-            float MandelbulbDistance(vec3 point)
+            float MandelbulbDistanceEstimation(vec3 point)
             {
                 vec3 z = point; // z is the copy of the given point for faster calculation
-                float dr = 3.0; // dr is approximated as length of the running (complex) derivative
+                float dr = 5.0; // dr is approximated as length of the running (complex) derivative, default value changes glow effect
                 float r; // r is the given vectors length
 
                 // after iteration 20 the structure doesn't change much (source: https://www.skytopia.com/project/fractal/2mandelbulb.html#iter)
@@ -181,17 +182,20 @@
                     }
 
                     // calculate the power, scale it and set the animation speed
-                    float power = u_power + 5.0 *(1.0 + sin(0.5 * u_fractalIncrements));
+                    float power = u_power + 4.0 *(1.0 + sin(0.5 * u_fractalIncrements));
 
                     // conversion to polar coordinates + scale and rotate the point
                     float theta = acos(z.z / r) * power;
                     float phi = atan(z.y, z.x) * power;
-                    dr = pow(r, power - 1.0) * power * dr + 1.0;
                     float zr = pow(r, power);
 
                     // convert back to cartesian coordinates
                     z = zr * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta));
                     z += point;
+
+                    // calculate dr for the distance estimation
+                    dr = pow(r, power - 1.0) * power * dr + 1.0;
+
                 }
                 // calculate and return the distance estimator
                 return (0.5 * log(r) * r) / dr;
@@ -202,7 +206,7 @@
             float sceneSignedDistanceFunction(vec3 point)
             {
                 point = point * xRotation(time_rotation_x) * yRotation(time_rotation_y) * zRotation(time_rotation_z);
-                return MandelbulbDistance(point);
+                return MandelbulbDistanceEstimation(point);
             }
 
             // raymarch rendering is run on every pixel
@@ -556,7 +560,7 @@
 
                 // return value between 0 and 2 pi based on the elapsed ticks
                 GetTicksInRadians() {
-                    return ((this.elapsedTicks - ROTATION_TICKS) / ROTATION_TICKS) * (2 * Math.PI);
+                    return ((ROTATION_TICKS - this.elapsedTicks) / ROTATION_TICKS) * (2 * Math.PI);
                 }
 
                 // return float value that increases the power for the 3D fractal fragment shader

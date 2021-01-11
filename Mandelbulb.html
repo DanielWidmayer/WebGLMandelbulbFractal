@@ -83,7 +83,7 @@
                 <input type="range" min="1.0" max="100.0" value="50.0" step="0.5" name="FOV" id="u_fov" oninput="showVal('u_fov', 'fov_value')" /><br />
             </div>
         </div>
-        <script id="2d-vertex-shader" type="x-shader/x-vertex">
+        <script id="vertex-shader" type="x-shader/x-vertex">
             // set medium precision for the vertex shader GPU float calculations
             precision mediump float;
 
@@ -95,7 +95,7 @@
                 gl_Position = vec4(a_position, 0.0, 1.0);
             }
         </script>
-        <script id="3d-fragment-shader" type="x-shader/x-fragment">
+        <script id="fragment-shader" type="x-shader/x-fragment">
             // set medium precision for the fragment shader GPU float calculations
             precision mediump float;
 
@@ -232,7 +232,7 @@
                     if(dist < u_epsilon)
                     {
                         if(u_lightsEnabled) return (float(steps) / float(u_maxSteps)); // return gray scale value
-                        else return 1.0 - 2.0 * (float(steps) / float(u_maxSteps)); // return inverted gray scale => glow effect
+                        else return 1.0 - 2.0 * (float(steps) / float(u_maxSteps)); // return scaled inverted gray scale => glow effect
                     }
 
                     // if the distance is further than the object we hit nothing => background
@@ -275,6 +275,7 @@
 
             // return shortest distance to the scene surface in marching direction
             // if we don't hit anything between start and end, return end
+            // distance is needed for lighting
             float shortestDistanceToSurface(vec3 eyePos, vec3 marchingDirection, float start, float end) {
                 float depth = start;
                 for (int i = 0; i < MAX_STEPS; i++) {
@@ -586,7 +587,7 @@
                 timer = new Timer();
 
                 // read, compile, and create a shader program
-                shaderProgram = new Shader('2d-vertex-shader', '3d-fragment-shader');
+                shaderProgram = new Shader('vertex-shader', 'fragment-shader');
                 // activate the shader program
                 shaderProgram.UseProgram();
 
